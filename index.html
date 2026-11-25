@@ -118,6 +118,11 @@
                border-left: 1px solid rgba(255,255,255,0.5); }
   @keyframes bannerIn { 0%{filter:brightness(1.8)} 100%{filter:brightness(1)} }
 
+  .voice-row { display: flex; justify-content: center; margin-top: 10px; }
+  .btn-voice { background: transparent; color: #888; border: 1px solid #333; font-size: 12px; padding: 6px 14px; }
+  .btn-voice:hover { border-color: #666; color: #ccc; }
+  .btn-voice.on { color: #fff; border-color: #C61D23; background: rgba(198,29,35,0.15); }
+
   .desc {
     font-size: 11px; color: #777; text-align: center; max-width: 310px;
     margin-top: 6px; line-height: 1.5; min-height: 32px;
@@ -192,6 +197,7 @@
   <button class="btn btn-primary"   id="playBtn" onclick="toggleAuto()">▶ Auto</button>
   <button class="btn btn-secondary" id="nextBtn" onclick="changePhase(1)">Next →</button>
 </div>
+<div class="voice-row" id="voiceRow"><button class="btn btn-voice" id="voiceBtn" onclick="toggleVoice()">🔈 Voiceover: Off</button></div>
 
 <script>
 // ╔══════════════════════════════════════════════════════════════════╗
@@ -2755,6 +2761,54 @@ function renderScene(){
 // ╚══════════════════════════════════════════════════════════════════╝
 let current=0, isAuto=false, timer=null;
 const now = ()=>performance.now()/1000;
+// ── Voiceover: the device reads each step aloud (Web Speech API). Auto waits for the sentence to finish ──
+// Spoken text = ph.say, else ph.desc; the first step of each part opens with the exercise name.
+const VO = { on:false, ok:typeof speechSynthesis!=='undefined' && typeof SpeechSynthesisUtterance!=='undefined', voice:null, done:true, doneAt:0, endAt:0 };
+function pickVoice(){   // the most natural English voice the device has
+  const vs = VO.ok ? speechSynthesis.getVoices() : [];
+  const score = v=>(/premium|enhanced|natural|neural|online/i.test(v.name) ? 4 : 0) +
+    (/samantha|ava|allison|aria|jenny|google us english|google uk english female|daniel|serena|karen/i.test(v.name) ? 2 : 0) + (/en[-_]US/i.test(v.lang) ? 1 : 0);
+  VO.voice = vs.filter(v=>/^en([-_]|$)/i.test(v.lang)).sort((a,b)=>score(b)-score(a))[0] || null;
+}
+if(VO.ok){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+// Calm delivery: a little slower than normal speech, one sentence at a time with a short breath between
+const VO_RATE = .86, VO_GAP = .55;
+function sayText(i){
+  const ph=phases[i], txt=k=>phases[k].say ?? phases[k].desc;
+  if(i && txt(i)===txt(i-1)) return '';   // same sentence as the step before: not said twice
+  let s = txt(i);
+  // each exercise is named on its first step: "Exercise 1. Alertness Running Game."
+  if(phases.findIndex(p=>p.part===ph.part)===i){ const m=(PARTS[ph.part].title||'').match(/Ex(?:ercise)?\s*(\d+)/); s = `${m ? 'Exercise '+m[1]+'. ' : ''}${PARTS[ph.part].name}. ${s}`; }
+  return s.replace(/(\d)\s*–\s*(\d)/g, '$1 to $2').replace(/°/g, ' degrees').replace(/\s*×\s*/g, ' by ')
+          .replace(/(\d)v(\d)/g, '$1 v $2').replace(/(\d) m\b/g, '$1 metres').replace(/(\d)-yds?\b/g, '$1 yard').replace(/(\d)\s*yds?\b/g, '$1 yards').replace(/\s*&\s*/g, ' and ').replace(/\bmax\b/g, 'maximum').replace(/\s*—\s*/g, ', ');
+}
+function speak(i){
+  if(!VO.on || !VO.ok) return;
+  hush(); VO.on=true;
+  const text = sayText(i), parts = (text.match(/[^.!?:]+[.!?:]*/g)||[]).map(s=>s.trim()).filter(Boolean);
+  const run = {};  VO.run = run;
+  VO.done=false; VO.endAt = now() + text.split(/\s+/).length/(2.5*VO_RATE) + parts.length*VO_GAP + 2;   // in case the device never reports the end
+  const say = k=>{
+    if(VO.run!==run) return;
+    if(k>=parts.length){ VO.done=true; VO.doneAt=now(); return; }
+    const u = new SpeechSynthesisUtterance(parts[k]);
+    if(VO.voice){ u.voice=VO.voice; u.lang=VO.voice.lang; } else u.lang='en-US';
+    u.rate=VO_RATE; u.pitch=.98;
+    u.onend = u.onerror = ()=>{ if(VO.run===run) VO.gapT=setTimeout(()=>say(k+1), VO_GAP*1000); };
+    VO.u=u; speechSynthesis.speak(u);
+  };
+  say(0);
+}
+function hush(){ if(VO.ok) speechSynthesis.cancel(); clearTimeout(VO.gapT); VO.run=null; VO.done=true; VO.u=null; }
+// still talking (or just finished: a short beat before the next step)
+const talking = ()=>VO.on && ((!VO.done && now()<VO.endAt) || now()-VO.doneAt < .9);
+function toggleVoice(){
+  VO.on=!VO.on;
+  const b=document.getElementById('voiceBtn');
+  b.classList.toggle('on', VO.on); b.textContent = VO.on ? '🔊 Voiceover: On' : '🔈 Voiceover: Off';
+  if(VO.on) speak(current); else hush();
+}
+if(!VO.ok) document.getElementById('voiceRow').style.display='none';
 
 function retrigger(el, cls){ el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
 
@@ -2780,6 +2834,7 @@ function applyPhase(idx, snap){
   });
   document.getElementById('prevBtn').style.opacity = idx===0 ? '0.3':'1';
   document.getElementById('nextBtn').style.opacity = idx===phases.length-1 ? '0.3':'1';
+  speak(idx);
   return dur;
 }
 
@@ -2790,13 +2845,14 @@ function changePhase(dir){
 
 // Auto: each phase says how long to wait before the next (cues can change mid-set)
 function scheduleNext(wait){
-  timer=setTimeout(()=>{
+  timer=setTimeout(function go(){
+    if(talking()){ timer=setTimeout(go, 150); return; }   // voiceover: let the sentence finish
     if(current<phases.length-1){ current++; scheduleNext(applyPhase(current)); }
     else stopAuto();
   }, Math.max(2600, wait*1000));
 }
 function toggleAuto(){
-  if(isAuto){ stopAuto(); return; }
+  if(isAuto){ stopAuto(); hush(); return; }
   isAuto=true;
   document.getElementById('playBtn').textContent='⏸ Pause';
   if(current===phases.length-1){ current=0; applyPhase(0, true); }
